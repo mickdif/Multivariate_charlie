@@ -3,48 +3,43 @@
 # MULTIVARIANT CHARLIE VERSION
 
 import os
-import numpy as np
 
+from sched import scheduler
+
+import numpy as np
+import pandas as pd
 import torch
-from torch.autograd import Variable
 import torch.nn as nn
 import torch.optim as optim
-
+from torch.autograd import Variable
 import matplotlib.pyplot as plt 
 from matplotlib.pyplot import figure
-
-import pandas as pd
 
 from alpha_vantage.timeseries import TimeSeries
 from alpha_vantage.techindicators import TechIndicators
 
 print("All libraries loaded")
 
-
-disegna = 1 # i grafici rallentano il programma, con questa var si possono disabilitare (0)
-data_example = 1 # 0 -> no esempi
-salva_su_file = 1 # 
-
+aggiorna_dati = 0 # 0 no
+disegna = 0 # i grafici rallentano il programma, con questa var si possono disabilitare (0)
+data_example = 1 # 0 no
+salva_su_file = 1 # 0 no
 
 config = {
     "alpha_vantage": {
         "key": "demo",
         "mykey": "URXBRZFHAJXF1NSB",
         "symbol": "IBM",
-        "outputsize": "full", # MODIFICATO era full
-        "key_adjusted_close": "5. adjusted close", # note that we are using the adjusted close field of Alpha Vantage's daily 
-        #adjusted API to remove any artificial price turbulences due to stock splits and dividend payout events. 
-        #It is generally considered an industry best practice to use split/dividend-adjusted prices instead of raw prices to 
-        #model stock price movements. 
-        # per IBM ci sono i dati dal 99
+        "outputsize": "full",
+        "key_adjusted_close": "5. adjusted close", # It is considered an industry best practice to use split/dividend-adjusted prices instead of raw prices to model stock price movements. 
     },
     "data": {
         "window_size": 20,
         "days_predicted": 1,
-        "train_split_size": 0.9, # MOD era 0.8
+        "train_split_size": 0.9,
     },
     "plots": {
-        "xticks_interval": 90, # show a date every 90 days
+        "xticks_interval": 180, # show a date every xx days
         "color_actual": "#001f3f",
         "color_train": "#3D9970",
         "color_val": "#0074D9",
@@ -62,20 +57,30 @@ config = {
     "training": {
         "device": "cpu", # "cuda" or "cpu"
         "batch_size": 64, # +++ MOD erano 64
-        "num_epoch": 100, # +++ MOD erano 100
+        "num_epoch": 5, # +++ MOD erano 100
         "learning_rate": 0.01,# +++ MOD era 0.01
         "scheduler_step_size": 40,
     }
 }
 
-if(os.path.isfile("dcp_file.npy") & os.path.isfile("rsi_file.npy") & os.path.isfile("stochrsi_file.npy") & os.path.isfile("willr_file.npy") & os.path.isfile("roc_file.npy")):
+
+# se esistono i file coi dati li apre, altrimenti scarica i dati da AlphaVantage
+if(aggiorna_dati == 0 &
+   os.path.isfile("date_file.npy") & 
+   os.path.isfile("dcp_file.npy") & 
+   os.path.isfile("rsi_file.npy") & 
+   os.path.isfile("stochrsi_file.npy") & 
+   os.path.isfile("willr_file.npy") & 
+   os.path.isfile("roc_file.npy")):
+
+    data_date = np.load("date_file.npy")
     dcp = np.load("dcp_file.npy")
     rsi = np.load("rsi_file.npy")
     stochrsi = np.load("stochrsi_file.npy")
     willr = np.load("willr_file.npy")
-    roc = np.load("roc_file.npy")
-    
+    roc = np.load("roc_file.npy")  
 else:
+    print("Scaricando i dati...")
     def download_data(config):
         ts = TimeSeries(key=config["alpha_vantage"]["key"])
         ti = TechIndicators(key=config["alpha_vantage"]["mykey"])
@@ -90,67 +95,77 @@ else:
             num_data_points = len(data_date)
             display_date_range = "from " + data_date[0] + " to " + data_date[num_data_points-1]
             print("Number data points", num_data_points, display_date_range)
-            return data_
+
+            return data_, data_date
 
         name = config["alpha_vantage"]["key_adjusted_close"]
         data, _ = ts.get_daily_adjusted(config["alpha_vantage"]["symbol"], outputsize=config["alpha_vantage"]["outputsize"])
-        dcp = elaborate_data(name, data)
+        dcp, data_date = elaborate_data(name, data)
         
         name = "RSI"
-        data, _ = ti.get_rsi('IBM', 'daily', '14', 'close')
-        rsi = elaborate_data(name, data)
+        data, _ = ti.get_rsi(config["alpha_vantage"]["symbol"], 'daily', '14', 'close')
+        rsi, _ = elaborate_data(name, data)
         
         name = "FastK"
-        data, _ = ti.get_stochrsi('IBM', 'daily', '14', 'close')
-        stochrsi = elaborate_data(name, data)
+        data, _ = ti.get_stochrsi(config["alpha_vantage"]["symbol"], 'daily', '14', 'close')
+        stochrsi, _ = elaborate_data(name, data)
         
         name = "WILLR"
-        data, _ = ti.get_willr('IBM', 'daily', '14')
-        willr = elaborate_data(name, data)
+        data, _ = ti.get_willr(config["alpha_vantage"]["symbol"], 'daily', '14')
+        willr, _ = elaborate_data(name, data)
         
         name = "ROC"
-        data, _ = ti.get_roc('IBM', 'daily', '14')
-        roc = elaborate_data(name, data)
+        data, _ = ti.get_roc(config["alpha_vantage"]["symbol"], 'daily', '14')
+        roc, _ = elaborate_data(name, data)
         
-
-
-        return dcp, rsi, stochrsi, willr, roc
+        return data_date, dcp, rsi, stochrsi, willr, roc
     
     
-    dcp, rsi, stochrsi, willr, roc = download_data(config)
-    # data_close_price: Mat(1,len(data_close_price)) cioè un vettore coi valori dal primo a ieri
+    data_date, dcp, rsi, stochrsi, willr, roc = download_data(config)
+    # come ï¿½ fatto dcp: Mat(1,len(dcp)) cioï¿½ un vettore coi valori dal primo a ieri, in questo ordine per via del reverse
 
+    np.save("date_file", data_date)
     np.save("dcp_file", dcp)
     np.save("rsi_file", rsi)
     np.save("stochrsi_file", stochrsi)
     np.save("willr_file", willr)
     np.save("roc_file", roc)
 
+print("Dati caricati")
 
-# Faccio si che i vettori abbiano la stessa lunghezza, gettando i valori più vecchi nel caso differiscano, fondamentale perché DataFrame non accetta vettori con lunghezze differenti fra loro
-len_dcp = len(dcp)
-len_rsi = len(rsi)
-len_stochrsi = len(stochrsi)
-len_willr = len(willr)
-len_roc = len(roc)
-
+# Rendo i vettori della stessa lunghezza, gettando i valori piï¿½ vecchi nel caso differiscano,
+# fondamentale perchï¿½ DataFrame non accetta vettori con lunghezze differenti fra loro
+len_dcp, len_rsi, len_stochrsi, len_willr, len_roc = len(dcp), len(rsi), len(stochrsi), len(willr), len(roc)
 min_len = min(len_dcp, len_rsi, len_stochrsi, len_willr, len_roc)
 
+data_date = data_date[len_dcp-min_len:]
 dcp = dcp[len_dcp-min_len:]
 rsi = rsi[len_rsi-min_len:]
 stochrsi = stochrsi[len_stochrsi-min_len:]
 willr = willr[len_willr-min_len:]
 roc = roc[len_roc-min_len:]
 
-
 # creo DataFrame
-data = {'n_dcp': dcp,
-        'n_rsi': rsi,
-        'n_stochrsi': stochrsi,
+data = {'dcp': dcp,
+        'rsi': rsi,
+        'stochrsi': stochrsi,
         'willr': willr,
         'roc': roc}
-df = pd.DataFrame(data)
+df = pd.DataFrame(data, index=data_date)
+print("DataFrame creato")
+if salva_su_file == 1: 
+    df.to_csv("panda.csv")
+    print("e salvato in csv")
 
+
+if(disegna == 1):
+    df_to_plot = df.reset_index() # stampare coll'indice e' lento
+    plt.plot(df_to_plot.dcp)
+    plt.xlabel("Time")
+    plt.ylabel("Price (USD)")
+    plt.title("IBM dcp")
+    plt.savefig("initial_plot.png", dpi=250)
+    plt.show();
 
 print("Ora normalizzo")
 class Normalizer():
@@ -160,7 +175,7 @@ class Normalizer():
         self.sd = None
 
     def fit_transform(self, x): 
-        self.mu = np.mean(x, axis=(0)) # mean() fa la media dei dati sull'asse specificato. keepdims=True tolto perché non accettato da DataFrame
+        self.mu = np.mean(x, axis=(0)) # mean() fa la media dei dati sull'asse specificato. keepdims=True tolto perchï¿½ non accettato da DataFrame
         self.sd = np.std(x, axis=(0)) # deviazione std.  
         normalized_x = (x - self.mu)/self.sd
         return normalized_x
@@ -171,37 +186,25 @@ class Normalizer():
 scaler = Normalizer()
 df = scaler.fit_transform(df)
 
-if(disegna == 1):
-    plt.plot(df.n_dcp)
-    plt.xlabel("Time")
-    plt.ylabel("Price (USD)")
-    plt.title("IBM n_dcp")
-    plt.savefig("initial_plot.png", dpi=250)
-    plt.show();
-
-
-# X, y = df.drop(columns=['n_dcp']), df.n_dcp.values
-X, y = df, df.n_dcp.values
-
-if(data_example == 1):
-    print("df.shape: ", df.shape)
-    print("X.shape, y.shape: ", X.shape, y.shape)
-
+X, y = df, df.dcp.values
+if(data_example == 1): 
+    print("X.shape X=df: ", X.shape, "y.shape y=df.dcp: ", y.shape)
 
 def split_sequences(input_sequences, output_sequence, n_steps_in, n_steps_out):
     X, y = list(), list() # instantiate X and y
     for i in range(len(input_sequences)):
         # find the end of the input, output sequence
         end_ix = i + n_steps_in # = i + 20
-        out_end_ix = end_ix + n_steps_out # i + 20 + 1 = end_ix + 1 MOD: c'era -1, vd sotto per spiegaz
+        # out_end_ix = end_ix + n_steps_out # i + 20 + 1 = end_ix + 1 MOD: c'era -1, vd sotto per spiegaz
         # check if we are beyond the dataset
-        if out_end_ix > len(input_sequences): break
+        if end_ix + n_steps_out > len(input_sequences): break
         # gather input and output of the pattern
         seq_x = input_sequences[i:end_ix] # seq_x = inp[0,20]; seq_x = inp[1,21]; seq_x = inp[2,22] etc
-        seq_y = output_sequence[end_ix:out_end_ix] # seq_y = out[21]; seq_y = out[22]; seq_y = out[23] etc
-        X.append(seq_x), y.append(seq_y)        
+        seq_y = output_sequence[end_ix:end_ix+1] # seq_y = out[21]; seq_y = out[22]; seq_y = out[23] etc
 
-        # originale: mod perché così inutile, per lui funziona perché usa tutti gli indicatori per prevedere il prezzo di oggi, mentre io uso anche il prezzo per prevedere il prezzo di domani
+        X.append(seq_x), y.append(seq_y)      
+
+        # originale: mod perchï¿½ cosï¿½ inutile, per lui funziona perchï¿½ usa tutti gli indicatori per prevedere il prezzo di oggi, mentre io uso anche il prezzo per prevedere il prezzo di domani
         # seq_y = output_sequence[end_ix-1:out_end_ix] # seq_y = out[19, 20]; seq_y = out[20, 21]; seq_y = out[21, 22] etc
         
     return np.array(X), np.array(y)
@@ -210,29 +213,28 @@ def split_sequences(input_sequences, output_sequence, n_steps_in, n_steps_out):
 
 X_ss, y_mm = split_sequences(X, y, config["data"]["window_size"], config["data"]["days_predicted"])
 
-if(data_example == 1):  print(X_ss.shape, y_mm.shape)
 
-total_samples = len(X)
-train_test_cutoff = round(config["data"]["train_split_size"] * total_samples)
+train_test_cutoff = round(config["data"]["train_split_size"] * len(X))
 
 X_train = X_ss[:train_test_cutoff]
 X_test = X_ss[train_test_cutoff:]
-
 y_train = y_mm[:train_test_cutoff]
-y_test = y_mm[train_test_cutoff:] 
-
+y_test = y_mm[train_test_cutoff:]
 
 X_train_tensors = torch.tensor(X_train, requires_grad=True)
 X_test_tensors = torch.tensor(X_test, requires_grad=True)
 y_train_tensors = torch.tensor(y_train, requires_grad=True)
 y_test_tensors = torch.tensor(y_test, requires_grad=True)
 
-if(data_example == 1):  
-    print("X_train.shape, X_test.shape: ", X_train.shape, X_test.shape)
-    print("y_train.shape, y_test.shape: ", y_train.shape, y_test.shape)
-    print("Training Shape: ", X_train_tensors.shape, y_train_tensors.shape)
-    print("Testing Shape: ", X_test_tensors.shape, y_test_tensors.shape) 
- 
+
+if(data_example == 1):
+    print("X_ss.shape: ", X_ss.shape, "y_mm.shape: ", y_mm.shape)
+    print("ultimo X: X_test[-1] ", X_test[-1])
+    print("ultimo X: X_test[-2] ", X_test[-2])
+    print("ultimo X: X_test[-3] ", X_test[-3])
+    print("ultimo y: y_test[-1]", y_test[-1])
+    print("ultimo y: y_test[-2]", y_test[-2])
+    print("ultimo y: y_test[-3]", y_test[-3])
     
 # X_train_tensors = torch.reshape(X_train_tensors,   
 #                                       (X_train_tensors.shape[0], 100, 
@@ -244,12 +246,13 @@ if(data_example == 1):
 
 class LSTM(nn.Module):
     
-    def __init__(self, num_classes, input_size, hidden_size, num_layers):
+    def __init__(self, output_size, input_size, hidden_size, num_layers):
         super().__init__()
-        self.num_classes = num_classes # output size
-        self.num_layers = num_layers # number of recurrent layers in the lstm
         self.input_size = input_size # input size
+        self.num_layers = num_layers # number of recurrent layers in the lstm
         self.hidden_size = hidden_size # neurons in each lstm layer
+        self.output_size = output_size # output size
+
         # LSTM model
         self.fc_1 =  nn.Linear(input_size, hidden_size) # fully connected 
         self.relu = nn.ReLU()
@@ -257,8 +260,19 @@ class LSTM(nn.Module):
         self.lstm = nn.LSTM(input_size=hidden_size, hidden_size=hidden_size,
                             num_layers=num_layers, batch_first=True, dropout=config["model"]["dropout"]) # lstm
         self.dropout = nn.Dropout(config["model"]["dropout"])
-        self.fc_2 = nn.Linear(num_layers * hidden_size, num_classes) # fully connected last layer. num_layers * 
+
+        self.fc_2 = nn.Linear(num_layers * hidden_size, output_size) # fully connected last layer
      
+        self.init_weights()
+
+    def init_weights(self):
+        for name, param in self.lstm.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0.0)
+            elif 'weight_ih' in name:
+                nn.init.kaiming_normal_(param)
+            elif 'weight_hh' in name:
+                nn.init.orthogonal_(param)
 
     def forward(self,x):
         # prepara hidden state e cell state
@@ -284,15 +298,15 @@ class LSTM(nn.Module):
 
         return out
 
-
-def training_loop(n_epochs, lstm, optimiser, loss_fn, X_train, y_train,
-                  X_test, y_test):
+def training_loop(n_epochs, lstm, optimiser, loss_fn, X_train, y_train,X_test, y_test):
     for epoch in range(n_epochs):
         lstm.train()
+
         X_train = X_train.float()
         y_train = y_train.float()
         X_test = X_test.float()
         y_test = y_test.float()
+
         outputs = lstm.forward(X_train) # forward pass
         optimiser.zero_grad() # calculate the gradient, manually setting to 0
         # obtain the loss function
@@ -303,12 +317,14 @@ def training_loop(n_epochs, lstm, optimiser, loss_fn, X_train, y_train,
         lstm.eval()
         test_preds = lstm(X_test)
         test_loss = loss_fn(test_preds, y_test)
+    
+        # lr = scheduler.get_last_lr()[0]
         print('Epoch[{}/{}] | loss train:{:.6f}, test:{:.6f}'
-          .format(epoch + 1, n_epochs, loss.item(), test_loss.item()))
+        .format(epoch + 1, n_epochs, loss.item(), test_loss.item()))
             
 # ??? prob per i filtri in print
-import warnings
-warnings.filterwarnings('ignore')
+# import warnings
+# warnings.filterwarnings('ignore')
 
 lstm = LSTM(  config["model"]["output_size"],
               config["model"]["input_size"], 
@@ -317,6 +333,7 @@ lstm = LSTM(  config["model"]["output_size"],
 
 loss_fn = torch.nn.MSELoss()    # mean-squared error for regression
 optimiser = torch.optim.Adam(lstm.parameters(), lr=config["training"]["learning_rate"]) 
+# scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=config["training"]["scheduler_step_size"], gamma=0.1)
 
 training_loop(n_epochs=config["training"]["num_epoch"],
               lstm=lstm,
@@ -327,18 +344,21 @@ training_loop(n_epochs=config["training"]["num_epoch"],
               X_test=X_test_tensors,
               y_test=y_test_tensors)
 
-
 # df_X_ss = scaler.fit_transform(df.drop(columns=['n_dcp'])) # old transformers
 # df_X_ss = scaler.fit_transform(df) # old transformers
-# df_y_mm = scaler.fit_transform(df.n_dcp.values).reshape(-1, 1) # old transformers 
-# split the sequence
-df_X_ss, df_y_mm = split_sequences(df, df.n_dcp.values.reshape(-1, 1), 20, 1)
-# converting to tensors
-df_X_ss = Variable(torch.Tensor(df_X_ss))
-df_y_mm = Variable(torch.Tensor(df_y_mm))
 
-# df_X_ss = torch.Tensor(df_X_ss, requires_grad=True)
-# df_y_mm = torch.Tensor(df_y_mm,  requires_grad=True)
+# df_y_mm = scaler.fit_transform(df.n_dcp.values).reshape(-1, 1) # old transformers
+
+# split the sequence
+df_X_ss, df_y_mm = split_sequences(df, df.dcp.values.reshape(-1, 1), 20, 1)
+
+# converting to tensors
+# df_X_ss = Variable(torch.Tensor(df_X_ss))
+# df_y_mm = Variable(torch.Tensor(df_y_mm))
+# uso Variable benchï¿½ deprecato perchï¿½ in questo caso l'altro metodo dï¿½ errore, da approfondire
+
+df_X_ss = torch.tensor(df_X_ss, requires_grad=True)
+df_y_mm = torch.tensor(df_y_mm,  requires_grad=True)
 
 # reshaping the dataset
 # df_X_ss = torch.reshape(df_X_ss, (df_X_ss.shape[0], 20, df_X_ss.shape[2]))
@@ -356,46 +376,42 @@ for i in range(len(dataY_plot)):
     true.append(dataY_plot[i][0])
 for i in range(len(data_predict)):
     preds.append(data_predict[i][0])
-plt.figure(figsize=(10,6)) #plotting
-plt.axvline(x=train_test_cutoff, c='r', linestyle='--') # size of the training set
 
 if(disegna == 1):
+    plt.figure(figsize=(10,6)) #plotting
+    plt.axvline(x=train_test_cutoff, c='r', linestyle='--') # size of the training set
     plt.plot(true, label='Actual Data') # actual plot
     plt.plot(preds, label='Predicted Data') # predicted plot
     plt.title('Time-Series Prediction')
     plt.legend()
     plt.savefig("whole_plot.png", dpi=300)
     plt.show() 
-
+    
+    # zoom
+    plt.figure(figsize=(10,6)) #plotting
+    plt.plot(true[train_test_cutoff:], label='Actual Data') # actual plot
+    plt.plot(preds[train_test_cutoff:], label='Predicted Data') # predicted plot
+    plt.title('Only test data')
+    plt.legend()
+    plt.savefig("test_plot.png", dpi=300)
+    plt.show() 
 
 if(salva_su_file == 1):
     np.savetxt("reali.csv", np.flip(np.round(true, 2), 0), delimiter='\n', header="Reali", fmt="%2f")
     np.savetxt("previsti.csv", np.flip(np.round(preds, 2), 0), delimiter='\n', header="Previsti", fmt="%2f")
 
+
+# ultima previsione: prossima chiusura
 test_predict = lstm(X_test_tensors[-1].unsqueeze(0)) # get the last sample
 test_predict = test_predict.detach().numpy()
+# test_predict = scaler.inverse_transform(test_predict)
 test_predict = test_predict[0].tolist()
 
 test_target = y_test_tensors[-1].detach().numpy() # last sample again
+# test_target = scaler.inverse_transform(test_target.reshape(1, -1))
 test_target = test_target[0].tolist()
 
-if(disegna == 2):
-    plt.plot(test_target, label="Actual Data")
-    plt.plot(test_predict, label="LSTM Predictions")
-    plt.savefig("small_plot.png", dpi=300)
-    plt.title('small_plot')
-    plt.show();
-
-if(disegna == 1):
-    plt.figure(figsize=(10,6)) #plotting
-    a = [x for x in range(2500, len(y))]
-    plt.plot(a, y[2500:], label='Actual data');
-    c = [x for x in range(len(y)-1, len(y))]
-    plt.plot(c, test_predict, label='One-shot multi-step prediction (1 day)')
-    plt.axvline(x=len(y)-1, c='r', linestyle='--')
-    plt.legend()
-    plt.savefig("final_plot.png", dpi=300)
-    plt.title('final_plot')
-    plt.show()
+print("test_predict", test_predict)
+print("test_target", test_target)
 
 print("FINE, CIAO")
